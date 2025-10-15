@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include "io.h"
 #include "rprintf.h"   
+#include "page.h"
 
 #define MULTIBOOT2_HEADER_MAGIC 0xe85250d6
 
@@ -96,18 +97,34 @@ int putc(int data) {
 }
 
 void main() {
-    esp_printf(putc, "Scancodes:\n");
+    // free page list
+    init_pfa_list();
+    esp_printf(putc, "Free page list:\n");
 
-    while (1) {
-        uint8_t status = inb(0x64);        
-        if (status & 0x01) {               
-            uint8_t scancode = inb(0x60);
-	    if (scancode > 128) {
-	       continue;
-	    }
-
-            esp_printf(putc, "0x%02x    %c\n", scancode, keyboard_map[scancode]);
-        }
+    // 3 pages
+    struct ppage *allocated = allocate_physical_pages(3);
+    if (allocated == 0) {
+        esp_printf(putc, "Allocation failed\n");
+        while (1);
     }
-}
 
+    // physical addresses of allocated pages
+    struct ppage *current = allocated;
+    int count = 1;
+    while (current) {
+        esp_printf(putc, "Page %d physical address: 0x%x\n", count, current->physical_addr);
+        current = current->next;
+        count++;
+    }
+
+    // free them to free list
+    free_physical_pages(allocated);
+    esp_printf(putc, "Freed pages back to free list.\n");
+
+    // one more page to check list integrity
+    struct ppage *new_page = allocate_physical_pages(1);
+    esp_printf(putc, "Allocated one page at: 0x%x\n", new_page->physical_addr);
+
+    while (1);
+
+}
