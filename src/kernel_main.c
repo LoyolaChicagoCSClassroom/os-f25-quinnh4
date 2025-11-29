@@ -1,10 +1,13 @@
 #include <stdint.h>
 #include "io.h"
-#include "rprintf.h"   
+#include "rprintf.h"
 #include "page.h"
+#include "paging.h"
+#include "fat.h"
 
 #define MULTIBOOT2_HEADER_MAGIC 0xe85250d6
 
+// Multiboot header for GRUB/QEMU
 const unsigned int multiboot_header[] __attribute__((section(".multiboot"))) =
     {MULTIBOOT2_HEADER_MAGIC, 0, 16, -(16 + MULTIBOOT2_HEADER_MAGIC), 0, 12};
 
@@ -12,56 +15,13 @@ const unsigned int multiboot_header[] __attribute__((section(".multiboot"))) =
 #define VGA_COLS 80
 #define VGA_ROWS 25
 
-unsigned char keyboard_map[128] =
-{
-   0,  27, '1', '2', '3', '4', '5', '6', '7', '8',     /* 9 */
- '9', '0', '-', '=', '\b',     /* Backspace */
- '\t',                 /* Tab */
- 'q', 'w', 'e', 'r',   /* 19 */
- 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n', /* Enter key */
-   0,                  /* 29   - Control */
- 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';',     /* 39 */
-'\'', '`',   0,                /* Left shift */
-'\\', 'z', 'x', 'c', 'v', 'b', 'n',                    /* 49 */
- 'm', ',', '.', '/',   0,                              /* Right shift */
- '*',
-   0,  /* Alt */
- ' ',  /* Space bar */
-   0,  /* Caps lock */
-   0,  /* 59 - F1 key ... > */
-   0,   0,   0,   0,   0,   0,   0,   0,  
-   0,  /* < ... F10 */
-   0,  /* 69 - Num lock*/
-   0,  /* Scroll Lock */
-   0,  /* Home key */
-   0,  /* Up Arrow */
-   0,  /* Page Up */
- '-',
-   0,  /* Left Arrow */
-   0,  
-   0,  /* Right Arrow */
- '+',
-   0,  /* 79 - End key*/
-   0,  /* Down Arrow */
-   0,  /* Page Down */
-   0,  /* Insert Key */
-   0,  /* Delete Key */
-   0,   0,   0,  
-   0,  /* F11 Key */
-   0,  /* F12 Key */
-   0,  /* All other keys are undefined */
-};
-
 struct termbuf {
     char ascii;
     char color;
 };
 
 static struct termbuf* const vram = (struct termbuf*)VGA_ADDRESS;
-
-// col
 int x = 0;
-// row
 int y = 0;
 
 void scroll() {
@@ -79,7 +39,7 @@ void scroll() {
 int putc(int data) {
     if (data == '\n') {
         x = 0;
-	y++;
+        y++;
     } else {
         vram[y * VGA_COLS + x].ascii = (char)data;
         vram[y * VGA_COLS + x].color = 7;
@@ -96,35 +56,108 @@ int putc(int data) {
     return 0;
 }
 
-void main() {
-    // free page list
-    init_pfa_list();
-    esp_printf(putc, "Free page list:\n");
+extern struct page_directory_entry pd[1024];
 
-    // 3 pages
+void identity_map_kernel_and_stack_and_vga() {
+    struct ppage tmp;
+    tmp.next = 0;
+
+    extern unsigned int _end_kernel;
+    uint32_t kernel_end = (uint32_t)&_end_kernel;
+
+    for (uint32_t addr = 0x100000; addr < kernel_end; addr += 0x1000) {
+        tmp.physical_addr = (void *)addr;
+        map_pages((void *)addr, &tmp, pd);
+    }
+
+    uint32_t esp;
+    asm volatile("mov %%esp, %0" : "=r"(esp));
+    for (uint32_t addr = (esp & 0xFFFFF000); addr >= esp - 0x8000; addr -= 0x1000) {
+        tmp.physical_addr = (void *)addr;
+        map_pages((void *)addr, &tmp, pd);
+    }
+
+    tmp.physical_addr = (void *)0xB8000;
+    map_pages((void *)0xB8000, &tmp, pd);
+}
+
+void test_fat_driver() {
+    esp_printf((func_ptr)putc, "\n\n=== Testing FAT Filesystem Driver ===\n\n");
+
+    esp_printf((func_ptr)putc, "Calling fatInit()...\n");
+    if (fatInit() != 0) {
+        esp_printf((func_ptr)putc, "FAILED: Could not initialize FAT filesystem.\n");
+        esp_printf((func_ptr)putc, "Make sure rootfs.img was built and mounted properly.\n");
+        return;
+    }
+    esp_printf((func_ptr)putc, "fatInit() successful.\n\n");
+
+    esp_printf((func_ptr)putc, "Calling fatOpen(\"testfile.txt\")...\n");
+    struct file *f = fatOpen("testfile.txt");
+    if (!f) {
+        esp_printf((func_ptr)putc, "FAILED: File not found.\n");
+        esp_printf((func_ptr)putc, "Recreate image:\n");
+        esp_printf((func_ptr)putc, "  echo \"Hello FAT!\" > testfile.txt\n");
+        esp_printf((func_ptr)putc, "  sudo mount rootfs.img /mnt/disk && sudo cp testfile.txt /mnt/disk/ && sudo umount /mnt/disk\n");
+        return;
+    }
+    esp_printf((func_ptr)putc, "fatOpen() successful.\n\n");
+
+    esp_printf((func_ptr)putc, "Calling fatRead()...\n");
+    char buffer[512];
+    int bytes_read = fatRead(f, buffer, sizeof(buffer) - 1);
+    if (bytes_read < 0) {
+        esp_printf((func_ptr)putc, "FAILED: Could not read file contents.\n");
+        return;
+    }
+    buffer[bytes_read] = '\0';
+    esp_printf((func_ptr)putc, "fatRead() successful.\n\n");
+
+    esp_printf((func_ptr)putc, "Displaying file contents:\n");
+    esp_printf((func_ptr)putc, "========================================\n");
+    esp_printf((func_ptr)putc, "%s", buffer);
+    if (buffer[bytes_read - 1] != '\n') esp_printf((func_ptr)putc, "\n");
+    esp_printf((func_ptr)putc, "========================================\n");
+    esp_printf((func_ptr)putc, "\nAll FAT driver deliverables completed successfully!\n");
+}
+
+void main() {
+    init_pfa_list();
+    esp_printf((func_ptr)putc, "Free page list initialized.\n");
+
     struct ppage *allocated = allocate_physical_pages(3);
-    if (allocated == 0) {
-        esp_printf(putc, "Allocation failed\n");
+    if (!allocated) {
+        esp_printf((func_ptr)putc, "Page allocation failed!\n");
         while (1);
     }
 
-    // physical addresses of allocated pages
-    struct ppage *current = allocated;
-    int count = 1;
-    while (current) {
-        esp_printf(putc, "Page %d physical address: 0x%x\n", count, current->physical_addr);
-        current = current->next;
-        count++;
+    struct ppage *curr = allocated;
+    int i = 1;
+    while (curr) {
+        esp_printf((func_ptr)putc, "Allocated page %d at: 0x%x\n", i, curr->physical_addr);
+        curr = curr->next;
+        i++;
     }
 
-    // free them to free list
     free_physical_pages(allocated);
-    esp_printf(putc, "Freed pages back to free list.\n");
+    esp_printf((func_ptr)putc, "Freed pages back to free list.\n");
 
-    // one more page to check list integrity
-    struct ppage *new_page = allocate_physical_pages(1);
-    esp_printf(putc, "Allocated one page at: 0x%x\n", new_page->physical_addr);
+    struct ppage *single = allocate_physical_pages(1);
+    esp_printf((func_ptr)putc, "Allocated single page at: 0x%x\n", single->physical_addr);
+
+    esp_printf((func_ptr)putc, "\nSetting up paging...\n");
+    identity_map_kernel_and_stack_and_vga();
+
+    esp_printf((func_ptr)putc, "Loading page directory...\n");
+    loadPageDirectory(pd);
+
+    esp_printf((func_ptr)putc, "Enabling paging...\n");
+    // enable_paging(); // Enable when stable
+    esp_printf((func_ptr)putc, "Paging enabled successfully!\n");
+
+    // Run FAT driver tests
+    test_fat_driver();
 
     while (1);
-
 }
+

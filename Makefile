@@ -26,6 +26,9 @@ OBJS = \
 	kernel_main.o \
 	rprintf.o \
 	page.o \
+	paging.o \
+	fat.o \
+	ide.o \
 
 # Make sure to keep a blank line here after OBJS list
 
@@ -35,7 +38,7 @@ $(ODIR)/%.o: $(SDIR)/%.c
 	$(CC) $(CFLAGS) -c -g -o $@ $^
 
 $(ODIR)/%.o: $(SDIR)/%.s
-	$(CC) $(CFLAGS) -c -g -o $@ $^
+	nasm -f elf32 -g -o $@ $^
 
 
 all: bin rootfs.img
@@ -58,7 +61,6 @@ rootfs.img:
 	mmd -i rootfs.img@@1M boot 
 	mcopy -i rootfs.img@@1M grub.cfg ::/boot
 	@echo " -- BUILD COMPLETED SUCCESSFULLY --"
-
 
 run:
 	qemu-system-i386 -hda rootfs.img
