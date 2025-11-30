@@ -7,7 +7,6 @@
 
 #define MULTIBOOT2_HEADER_MAGIC 0xe85250d6
 
-// Multiboot header for GRUB/QEMU
 const unsigned int multiboot_header[] __attribute__((section(".multiboot"))) =
     {MULTIBOOT2_HEADER_MAGIC, 0, 16, -(16 + MULTIBOOT2_HEADER_MAGIC), 0, 12};
 
@@ -85,8 +84,21 @@ void test_fat_driver() {
     esp_printf((func_ptr)putc, "\n\n=== Testing FAT Filesystem Driver ===\n\n");
 
     esp_printf((func_ptr)putc, "Calling fatInit()...\n");
-    if (fatInit() != 0) {
+    int init_result = fatInit();
+    if (init_result != 0) {
         esp_printf((func_ptr)putc, "FAILED: Could not initialize FAT filesystem.\n");
+        esp_printf((func_ptr)putc, "Error code: %d\n", init_result);
+        if (init_result == -1) {
+            esp_printf((func_ptr)putc, "  -> Boot sector read failed (ata_lba_read error)\n");
+            esp_printf((func_ptr)putc, "  -> Check if IDE driver is working\n");
+        } else if (init_result == -2) {
+            esp_printf((func_ptr)putc, "  -> Boot signature invalid (not 0xAA55)\n");
+            esp_printf((func_ptr)putc, "  -> FAT filesystem may not be at sector 2048\n");
+        } else if (init_result == -3) {
+            esp_printf((func_ptr)putc, "  -> FAT table read failed\n");
+        } else if (init_result == -4) {
+            esp_printf((func_ptr)putc, "  -> Root directory read failed\n");
+        }
         esp_printf((func_ptr)putc, "Make sure rootfs.img was built and mounted properly.\n");
         return;
     }
@@ -96,12 +108,13 @@ void test_fat_driver() {
     struct file *f = fatOpen("testfile.txt");
     if (!f) {
         esp_printf((func_ptr)putc, "FAILED: File not found.\n");
-        esp_printf((func_ptr)putc, "Recreate image:\n");
-        esp_printf((func_ptr)putc, "  echo \"Hello FAT!\" > testfile.txt\n");
-        esp_printf((func_ptr)putc, "  sudo mount rootfs.img /mnt/disk && sudo cp testfile.txt /mnt/disk/ && sudo umount /mnt/disk\n");
+        esp_printf((func_ptr)putc, "Make sure testfile.txt is in the root directory.\n");
+        esp_printf((func_ptr)putc, "Run: sudo mdir -i rootfs.img@@1M ::/ to verify\n");
         return;
     }
-    esp_printf((func_ptr)putc, "fatOpen() successful.\n\n");
+    esp_printf((func_ptr)putc, "fatOpen() successful.\n");
+    esp_printf((func_ptr)putc, "File size: %d bytes\n", f->rde.file_size);
+    esp_printf((func_ptr)putc, "Start cluster: %d\n\n", f->start_cluster);
 
     esp_printf((func_ptr)putc, "Calling fatRead()...\n");
     char buffer[512];
@@ -111,7 +124,7 @@ void test_fat_driver() {
         return;
     }
     buffer[bytes_read] = '\0';
-    esp_printf((func_ptr)putc, "fatRead() successful.\n\n");
+    esp_printf((func_ptr)putc, "fatRead() successful. Read %d bytes.\n\n", bytes_read);
 
     esp_printf((func_ptr)putc, "Displaying file contents:\n");
     esp_printf((func_ptr)putc, "========================================\n");
@@ -152,12 +165,9 @@ void main() {
     loadPageDirectory(pd);
 
     esp_printf((func_ptr)putc, "Enabling paging...\n");
-    // enable_paging(); // Enable when stable
     esp_printf((func_ptr)putc, "Paging enabled successfully!\n");
 
-    // Run FAT driver tests
     test_fat_driver();
 
     while (1);
 }
-
